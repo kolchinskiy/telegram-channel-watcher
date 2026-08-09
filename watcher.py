@@ -1,45 +1,47 @@
 import os
+import json
 import requests
 from bs4 import BeautifulSoup
 
-CHANNEL = "whatwwme"
-STATE_FILE = "state.txt"
+CHANNELS = [
+    "whatwwme",
+    "test42_5",
+]
+
+STATE_FILE = "state.json"
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
 
 
-def get_last_post():
-    url = f"https://t.me/s/{CHANNEL}"
+def get_last_post(channel):
+    url = f"https://t.me/s/{channel}"
 
     response = requests.get(
         url,
         timeout=30,
-        headers={
-            "User-Agent": "Mozilla/5.0"
-        }
+        headers={"User-Agent": "Mozilla/5.0"},
     )
     response.raise_for_status()
 
     soup = BeautifulSoup(response.text, "html.parser")
-
     posts = soup.select(".tgme_widget_message")
 
     if not posts:
-        raise RuntimeError("Не удалось найти посты канала")
+        raise RuntimeError(f"Не удалось найти посты канала @{channel}")
 
     post = posts[-1]
 
     data_post = post.get("data-post")
     if not data_post:
-        raise RuntimeError("Не удалось определить ID поста")
+        raise RuntimeError(f"Не удалось определить ID поста @{channel}")
 
     post_id = data_post.split("/")[-1]
 
     text_element = post.select_one(".tgme_widget_message_text")
     text = text_element.get_text("\n", strip=True) if text_element else ""
 
-    link = f"https://t.me/{CHANNEL}/{post_id}"
+    link = f"https://t.me/{channel}/{post_id}"
 
     return post_id, text, link
 
@@ -60,38 +62,61 @@ def send_message(text):
     response.raise_for_status()
 
 
-def main():
-    post_id, text, link = get_last_post()
+def load_state():
+    if not os.path.exists(STATE_FILE):
+        return {}
 
-    old_id = None
-
-    if os.path.exists(STATE_FILE):
+    try:
         with open(STATE_FILE, "r") as f:
-            old_id = f.read().strip()
+            return json.load(f)
+    except Exception:
+        return {}
 
-    if old_id == post_id:
-        print("Новых постов нет.")
-        return
 
+def save_state(state):
     with open(STATE_FILE, "w") as f:
-        f.write(post_id)
+        json.dump(state, f, indent=2)
 
-    # Первый запуск только запоминает последний пост.
-    # Старые посты уведомлением не отправляем.
-    if old_id is None:
-        print(f"Первый запуск. Последний пост: {post_id}")
-        return
 
-    message = f"🔔 Новый пост в @{CHANNEL}\n\n"
+def main():
+    state = load_state()
+    changed = False
 
-    if text:
-        message += text[:3500] + "\n\n"
+    for channel in CHANNELS:
+        try:
+            post_id, text, link = get_last_post(channel)
 
-    message += f"👉 {link}"
+            old_id = state.get(channel)
 
-    send_message(message)
+            if old_id == post_id:
+                print(f"@{channel}: новых постов нет.")
+                continue
 
-    print(f"Отправлено уведомление о посте {post_id}")
+            state[channel] = post_id
+            changed = True
+
+            # Первый запуск для конкретного канала:
+            # только запоминаем текущий пост.
+            if old_id is None:
+                print(f"@{channel}: первый запуск, пост {post_id} сохранён.")
+                continue
+
+            message = f"🔔 Новый пост в @{channel}\n\n"
+
+            if text:
+                message += text[:3500] + "\n\n"
+
+            message += f"👉 {link}"
+
+            send_message(message)
+
+            print(f"@{channel}: уведомление отправлено, пост {post_id}")
+
+        except Exception as e:
+            print(f"@{channel}: ошибка: {e}")
+
+    if changed:
+        save_state(state)
 
 
 if __name__ == "__main__":
